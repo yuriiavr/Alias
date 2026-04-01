@@ -3,12 +3,14 @@
 interface GameProps {
   currentWord: string;
   isSpeaker: boolean;
+  speakerName: string | null;
   onNext: (guessed: boolean) => void;
 }
 
 export default function AliasCard({
   currentWord,
   isSpeaker,
+  speakerName,
   onNext,
 }: GameProps) {
   return (
@@ -17,13 +19,13 @@ export default function AliasCard({
       
       {isSpeaker ? (
         <>
-          <span className="text-[10px] uppercase tracking-[0.3em] text-red-700 mb-6 font-bold">
+          <span className="text-[10px] display-font uppercase tracking-[0.3em] text-red-700 mb-6 font-bold">
             Твоє слово:
           </span>
           
           <div className="w-full flex justify-center mb-16 px-2">
             <h2 
-              className="font-black text-center tracking-tighter italic uppercase break-words leading-[0.85]"
+              className="font-black display-font text-center tracking-tighter uppercase break-words leading-[0.85]"
               style={{
                 fontSize: 'clamp(1.5rem, 10vw, 3.5rem)',
                 wordBreak: currentWord.length > 10 ? 'break-all' : 'normal'
@@ -54,7 +56,8 @@ export default function AliasCard({
           <div className="relative py-10">
             <div className="absolute inset-0 blur-2xl bg-red-900/10 rounded-full animate-pulse"></div>
             <h2 className="relative text-2xl font-light text-zinc-400 tracking-wide">
-              Гравець <span className="text-red-700 font-bold uppercase italic">диктує</span>
+              Гравець <span className="text-red-700 font-bold uppercase italic">{speakerName || "..."}</span> <br/>
+              <span className="text-sm opacity-50">пояснює слово</span>
             </h2>
           </div>
           <div className="flex justify-center gap-1">

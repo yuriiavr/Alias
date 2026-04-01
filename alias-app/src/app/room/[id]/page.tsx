@@ -3,6 +3,7 @@
 import { useState, useEffect, use, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import AliasCard from "@/components/AliasCard";
+import Pusher from "pusher-js";
 
 export default function GameRoom({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
@@ -10,8 +11,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const searchParams = useSearchParams();
   const initialDifficulty = searchParams.get("level") || "mixed";
 
+  const [userName, setUserName] = useState("");
+  const [hasJoined, setHasJoined] = useState(false);
+  const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
+
   const [gameState, setGameState] = useState<"setup" | "playing" | "results" | "final">("setup");
-  
   const [difficulty, setDifficulty] = useState(initialDifficulty);
   const [totalRounds, setTotalRounds] = useState(3);
   const [currentRound, setCurrentRound] = useState(1);
@@ -27,6 +31,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [usedWords, setUsedWords] = useState<string[]>([]);
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+
   const fetchNewWords = useCallback(async (level: string, excluded: string[]) => {
     setLoading(true);
     try {
@@ -49,6 +54,34 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   }, []);
 
   useEffect(() => {
+    const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
+      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+    });
+
+    const channel = pusher.subscribe(`room-${roomId}`);
+
+    channel.bind("game-event", (data: any) => {
+      if (data.actionType === "SPEAKER_CHANGE") {
+        setCurrentSpeaker(data.speakerName);
+        setGameState("playing");
+        setIsActive(true);
+        setTimer(60);
+      }
+      if (data.actionType === "WORD_UPDATE") {
+        setTeams(prev => {
+          const next = [...prev];
+          next[currentTeamIndex].score += data.isGuessed ? 1 : -1;
+          return next;
+        });
+      }
+    });
+
+    return () => {
+      pusher.unsubscribe(`room-${roomId}`);
+    };
+  }, [roomId, currentTeamIndex]);
+
+  useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isActive && timer > 0) {
       interval = setInterval(() => setTimer((prev) => prev - 1), 1000);
@@ -60,32 +93,44 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   }, [isActive, timer]);
 
   const startGame = async () => {
+    if (!userName.trim()) return alert("Введіть нікнейм");
     setLoading(true);
-    setWordsQueue([]); 
     const words = await fetchNewWords(difficulty, usedWords);
     
     if (words.length > 0) {
-      setGameState("playing");
-      setIsActive(true);
-      setTimer(60);
-    } else {
-      alert("Не вдалося завантажити слова. Спробуйте ще раз.");
+      await fetch("/api/game/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          roomId, 
+          speakerName: userName, 
+          actionType: "SPEAKER_CHANGE" 
+        }),
+      });
     }
     setLoading(false);
   };
 
-  const handleNextWord = (guessed: boolean) => {
+  const handleNextWord = async (guessed: boolean) => {
     if (wordsQueue.length === 0) return;
     const currentWord = wordsQueue[0];
-    const newTeams = [...teams];
-    newTeams[currentTeamIndex].score += guessed ? 1 : -1;
-    setTeams(newTeams);
-    const newUsed = [...usedWords, currentWord];
-    setUsedWords(newUsed);
+    
+    await fetch("/api/game/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        roomId, 
+        isGuessed: guessed, 
+        actionType: "WORD_UPDATE" 
+      }),
+    });
+
+    setUsedWords(prev => [...prev, currentWord]);
     const nextQueue = wordsQueue.slice(1);
     setWordsQueue(nextQueue);
+    
     if (nextQueue.length <= 3 && !loading) {
-      fetchNewWords(difficulty, newUsed);
+      fetchNewWords(difficulty, [...usedWords, currentWord]);
     }
   };
 
@@ -99,21 +144,44 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     }
     setCurrentTeamIndex((prev) => (prev === 0 ? 1 : 0));
     setGameState("setup");
-    setTimer(60);
+    setCurrentSpeaker(null);
   };
+
+  if (!hasJoined) {
+    return (
+      <main className="flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6 text-white">
+        <div className="w-full max-w-sm space-y-8 text-center">
+          <h1 className="text-4xl font-black uppercase tracking-tighter">Кімната <span className="text-red-700">{roomId}</span></h1>
+          <div className="space-y-4">
+            <input
+              type="text"
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              placeholder="Твій нікнейм"
+              className="w-full px-6 py-4 bg-zinc-900 border border-zinc-800 rounded-2xl outline-none focus:border-red-700 transition-all font-bold"
+            />
+            <button
+              onClick={() => userName.trim() && setHasJoined(true)}
+              className="w-full py-4 bg-white cursor-pointer text-black rounded-2xl font-black uppercase tracking-widest"
+            >
+              Приєднатися
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="relative flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6 text-zinc-300 overflow-hidden font-sans">
-      {/* Background decoration */}
       <div className="absolute inset-0 z-0 pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-red-900/5 blur-[120px] rounded-full"></div>
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-zinc-900/10 blur-[120px] rounded-full"></div>
       </div>
 
-      {/* ROOM ID Badge (ВИДИМИЙ НОМЕР КІМНАТИ) */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 px-4 py-1.5 bg-zinc-900/50 border border-zinc-800 rounded-full backdrop-blur-md">
-         <span className="text-[10px] font-black tracking-[0.3em] uppercase text-zinc-500">
-           Кімната: <span className="text-red-600 select-all">{roomId}</span>
+         <span className="text-[10px] display-font font-black tracking-[0.3em] uppercase text-zinc-500">
+           Кімната: <span className="text-red-600 select-all">{roomId}</span> | Гравців: {userName}
          </span>
       </div>
 
@@ -124,15 +192,14 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
               <h1 className="text-5xl font-black tracking-tighter text-white italic uppercase leading-none">
                 ALIAS<span className="text-red-700">AI</span>
               </h1>
-              <p className="text-[10px] tracking-[0.4em] text-zinc-600 uppercase font-bold mt-3">Раунд {currentRound} з {totalRounds}</p>
+              <p className="text-[10px] display-font tracking-[0.4em] text-zinc-600 uppercase font-bold mt-3">Раунд {currentRound} з {totalRounds}</p>
             </header>
 
             <div className="bg-zinc-900/20 backdrop-blur-3xl border border-zinc-800/40 p-8 rounded-[2.5rem] space-y-6 shadow-2xl">
               {currentRound === 1 && usedWords.length === 0 ? (
                 <div className="space-y-6">
-                  {/* Team Names */}
                   <div className="space-y-3">
-                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Назви команд</label>
+                    <label className="text-[9px] display-font uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Назви команд</label>
                     {teams.map((team, idx) => (
                       <input
                         key={idx}
@@ -143,15 +210,13 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                           newTeams[idx].name = e.target.value;
                           setTeams(newTeams);
                         }}
-                        className="w-full px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
+                        className="w-full display-font px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
                         placeholder={`Команда ${idx + 1}`}
                       />
                     ))}
                   </div>
-
-                  {/* Rounds Count */}
                   <div className="space-y-3">
-                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Кількість раундів</label>
+                    <label className="text-[9px] display-font uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Кількість раундів</label>
                     <div className="flex gap-2">
                       {[3, 5, 10].map((num) => (
                         <button
@@ -164,10 +229,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                       ))}
                     </div>
                   </div>
-
-                  {/* Difficulty Selection (ДОДАНО MIXED) */}
                   <div className="space-y-3">
-                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Складність</label>
+                    <label className="text-[9px] display-font uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Складність</label>
                     <div className="grid grid-cols-4 gap-2">
                       {["easy", "mixed", "medium", "hard"].map((lvl) => (
                         <button
@@ -201,13 +264,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
               disabled={loading}
               className="w-full py-5 bg-red-700 hover:bg-red-600 text-white rounded-2xl font-black text-lg tracking-widest transition-all cursor-pointer shadow-[0_20px_50px_-10px_rgba(185,28,28,0.4)] active:scale-95 disabled:opacity-50"
             >
-              {loading ? "ЗАВАНТАЖЕННЯ..." : "ПОЧАТИ ХІД"}
+              {loading ? "ЗАВАНТАЖЕННЯ..." : "ПОЧАТИ ГРУ"}
             </button>
           </div>
         )}
 
-        {/* ... (решта коду gameState === "playing", "results", "final" залишається без змін) ... */}
-        {/* Копіюйте ваш попередній код для інших станів сюди */}
         {gameState === "playing" && (
            <div className="space-y-6 animate-in fade-in duration-500">
              <div className="flex justify-between items-center bg-zinc-900/30 backdrop-blur-md p-5 rounded-[1.5rem] border border-zinc-800/50">
@@ -225,7 +286,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
              <AliasCard 
                currentWord={wordsQueue[0] || "..."} 
-               isSpeaker={true} 
+               isSpeaker={currentSpeaker === userName} 
+               speakerName={currentSpeaker}
                onNext={handleNextWord} 
              />
 
@@ -239,7 +301,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
              </div>
            </div>
          )}
-         {/* ... і так далі для results та final */}
+
          {gameState === "results" && (
           <div className="text-center space-y-8 animate-in zoom-in-95 duration-500">
              <h2 className="text-4xl font-black italic uppercase text-white tracking-tighter">Час вийшов!</h2>
