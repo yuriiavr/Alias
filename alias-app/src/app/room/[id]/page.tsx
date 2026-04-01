@@ -31,6 +31,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [timer, setTimer] = useState(60);
   const [isActive, setIsActive] = useState(false);
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
+  const [nextSpeakerName, setNextSpeakerName] = useState<string | null>(null);
 
   const [teams, setTeams] = useState([
     { name: "Alpha Team", score: 0 },
@@ -47,8 +48,10 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const canControl = userName === currentSpeaker;
   const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
   const nextSpeakerIdx = speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
-  const isNextSpeaker = teamPlayers[nextSpeakerIdx]?.name === userName;
-  const canStartGame = isCreator || isNextSpeaker;
+  const isNextSpeaker = isFirstSetup
+    ? isCreator
+    : userName === nextSpeakerName;
+  const canStartGame = isNextSpeaker;
 
   useEffect(() => {
     const fetchCurrentState = async () => {
@@ -162,6 +165,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         setCurrentRound(data.currentRound);
         setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
         if (data.teams) setTeams(data.teams);
+        if (data.nextSpeakerName) setNextSpeakerName(data.nextSpeakerName);
         setGameState("setup");
         setCurrentSpeaker(null);
         setWordsQueue([]);
@@ -331,6 +335,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     const newSpeakerIndex = [...speakerIndexPerTeam];
     newSpeakerIndex[currentTeamIndex] = speakerIndexPerTeam[currentTeamIndex] + 1;
 
+    // Compute who speaks next
+    const nextTeamPlayers = players.filter((p) => p.team === nextTeam && !p.isSpectator);
+    const nextIdx = newSpeakerIndex[nextTeam] % (nextTeamPlayers.length || 1);
+    const computedNextSpeaker = nextTeamPlayers[nextIdx]?.name || null;
+
     if (currentTeamIndex === 1) {
       if (currentRound >= totalRounds) {
         // Broadcast final to everyone
@@ -355,6 +364,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         currentTeamIndex: nextTeam,
         currentRound: nextRound,
         speakerIndexPerTeam: newSpeakerIndex,
+        nextSpeakerName: computedNextSpeaker,
         teams,
       }),
     });
@@ -567,7 +577,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             ) : (
               <div className="text-center p-6 border border-dashed border-zinc-800 rounded-2xl opacity-50">
                 <p className="text-[10px] uppercase font-bold tracking-widest">
-                  Чекаємо, поки {teamPlayers[nextSpeakerIdx]?.name || "спікер"} почне гру...
+                  Чекаємо, поки {isFirstSetup ? players.find(p => p.isCreator)?.name : nextSpeakerName} почне гру...
                 </p>
               </div>
             )}
