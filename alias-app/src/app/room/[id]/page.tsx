@@ -118,6 +118,9 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       if (data.actionType === "WORD_UPDATE") {
         setTeams(data.newTeams);
         setWordsQueue((prev) => prev.slice(1));
+        if (data.addedWords) {
+          setWordsQueue((prev) => [...prev.slice(1), ...data.addedWords]);
+        }
       }
       if (data.actionType === "END_TURN") {
         setGameState("results");
@@ -216,8 +219,27 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   };
 
   const handleNextWord = async (guessed: boolean) => {
+    if (userName !== currentSpeaker && !isCreator) return;
+
     const newTeams = [...teams];
     newTeams[currentTeamIndex].score += guessed ? 1 : -1;
+    
+    let addedWords = null;
+
+    if (wordsQueue.length < 5 && !loading) {
+      setLoading(true);
+      try {
+        const res = await fetch("/api/words", {
+          method: "POST",
+          body: JSON.stringify({ difficulty, excludedWords: usedWords }),
+        });
+        const data = await res.json();
+        addedWords = data.words;
+      } catch (e) {
+        console.error(e);
+      }
+      setLoading(false);
+    }
 
     await fetch("/api/game/update", {
       method: "POST",
@@ -226,6 +248,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         actionType: "WORD_UPDATE",
         isGuessed: guessed,
         newTeams,
+        addedWords
       }),
     });
   };
@@ -253,6 +276,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     });
     setGameState("setup");
     setCurrentSpeaker(null);
+    setWordsQueue([]);
   };
 
   if (!hasJoined) {
@@ -334,7 +358,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             </header>
 
             <div className="bg-zinc-900/20 backdrop-blur-3xl border border-zinc-800/40 p-8 rounded-[2.5rem] space-y-6">
-              {currentRound === 1 && usedWords.length === 0 ? (
+              {currentRound === 1 && wordsQueue.length === 0 ? (
                 <div className="space-y-6">
                   <div className="space-y-3">
                     <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
