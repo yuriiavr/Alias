@@ -368,7 +368,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     });
   };
 
-  const handleNextTurn = async () => {
+  const handleNextTurn = async (teamsSnapshot = teams) => {
     let nextTeam = currentTeamIndex === 0 ? 1 : 0;
     let nextRound = currentRound;
 
@@ -383,13 +383,12 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
     if (currentTeamIndex === 1) {
       if (currentRound >= totalRounds) {
-        // Broadcast final to everyone
         await fetch("/api/game/update", {
           method: "POST",
           body: JSON.stringify({
             roomId,
             actionType: "GAME_FINAL",
-            teams,
+            teams: teamsSnapshot,
           }),
         });
         return;
@@ -406,7 +405,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         currentRound: nextRound,
         speakerIndexPerTeam: newSpeakerIndex,
         nextSpeakerName: computedNextSpeaker,
-        teams,
+        teams: teamsSnapshot,
       }),
     });
   };
@@ -764,7 +763,17 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                   {teams.map((t, i) => (
                     <button
                       key={i}
-                      onClick={() => handleBonusPoint(i)}
+                      onClick={async () => {
+                        const newTeams = teams.map((team, idx) => ({
+                          ...team,
+                          score: idx === i ? team.score + 1 : team.score,
+                        }));
+                        await fetch("/api/game/update", {
+                          method: "POST",
+                          body: JSON.stringify({ roomId, actionType: "BONUS_POINT", newTeams }),
+                        });
+                        handleNextTurn(newTeams);
+                      }}
                       className={`py-4 rounded-2xl font-black text-sm uppercase tracking-widest transition-all active:scale-95 border ${
                         i === currentTeamIndex
                           ? "bg-red-700 hover:bg-red-600 text-white border-transparent"
@@ -776,17 +785,17 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                   ))}
                 </div>
                 <button
-                  onClick={handleNextTurn}
-                  className="w-full py-4 bg-zinc-100 text-black rounded-2xl font-black uppercase tracking-widest transition-all active:scale-95 text-sm"
+                  onClick={() => handleNextTurn(teams)}
+                  className="w-full py-3 text-zinc-600 hover:text-zinc-400 font-bold text-[10px] uppercase tracking-[0.2em] transition-all"
                 >
-                  Передати хід →
+                  Нікому → передати хід
                 </button>
               </div>
             )}
 
             {canControl && soloMode && (
               <button
-                onClick={handleNextTurn}
+                onClick={() => handleNextTurn()}
                 className="w-full py-5 bg-zinc-100 text-black rounded-2xl font-black uppercase tracking-widest transition-all active:scale-95"
               >
                 Ще раз
