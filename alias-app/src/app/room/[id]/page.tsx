@@ -42,6 +42,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [isFirstSetup, setIsFirstSetup] = useState(true);
+  const [isJoining, setIsJoining] = useState(false);
 
   const canControl = userName === currentSpeaker;
   const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
@@ -108,7 +109,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       if (data.actionType === "SYNC_STATE") {
         if (data.players) {
           setPlayers(data.players);
-          // Cache for new joiners - serverless Map doesn't persist
           localStorage.setItem(`alias-players-${roomId}`, JSON.stringify(data.players));
         }
         if (data.teams) setTeams(data.teams);
@@ -118,6 +118,27 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
         if (data.speakerIndexPerTeam) setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
       }
+
+      // New joiner asks for current state - creator responds with full state broadcast
+      if (data.actionType === "REQUEST_STATE") {
+        const savedSession = localStorage.getItem(`alias-session-${roomId}`);
+        const savedPlayers = localStorage.getItem(`alias-players-${roomId}`);
+        if (!savedSession || !savedPlayers) return;
+        const session = JSON.parse(savedSession);
+        if (!session.isCreator) return; // only creator responds
+
+        const currentPlayers: Player[] = JSON.parse(savedPlayers);
+        // Broadcast full current state to everyone (including new joiner)
+        fetch("/api/game/update", {
+          method: "POST",
+          body: JSON.stringify({
+            roomId,
+            actionType: "SYNC_STATE",
+            players: currentPlayers,
+          }),
+        });
+      }
+
       if (data.actionType === "START_GAME") {
         setWordsQueue(data.words);
         setCurrentSpeaker(data.speakerName);
@@ -162,34 +183,44 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
   const joinRoom = async (mode: "player" | "spectator", team: number = 0) => {
     if (!userName.trim()) return;
+    setIsJoining(true);
 
-    // Read from localStorage cache (serverless Map() doesn't persist between requests)
+    const isSpec = mode === "spectator";
+
+    // Ask creator to broadcast current players list, then wait briefly
+    await fetch("/api/game/update", {
+      method: "POST",
+      body: JSON.stringify({ roomId, actionType: "REQUEST_STATE" }),
+    });
+
+    // Give creator time to respond via Pusher → SYNC_STATE → setPlayers
+    await new Promise((res) => setTimeout(res, 800));
+
+    // Now read whatever players arrived (from Pusher SYNC_STATE handler above)
+    // We use a ref-like trick: read from localStorage which SYNC_STATE populates
     let latestPlayers: Player[] = [];
     try {
       const cached = localStorage.getItem(`alias-players-${roomId}`);
       if (cached) latestPlayers = JSON.parse(cached);
     } catch (e) {}
 
-    // Also try API as fallback
-    if (latestPlayers.length === 0) {
-      try {
-        const res = await fetch(`/api/game/state?roomId=${roomId}`);
-        if (res.ok) {
-          const data = await res.json();
-          latestPlayers = data.players || [];
-        }
-      } catch (e) {}
-    }
-
-    const isSpec = mode === "spectator";
     const creatorStatus = latestPlayers.length === 0;
 
-    const newPlayer = {
+    const newPlayer: Player = {
       name: userName,
       team: isSpec ? -1 : team,
       isSpectator: isSpec,
       isCreator: creatorStatus,
     };
+
+    // Avoid duplicate join (e.g. double-click)
+    if (latestPlayers.some((p) => p.name === userName)) {
+      setIsJoining(false);
+      setHasJoined(true);
+      setIsSpectator(isSpec);
+      setUserTeam(team);
+      return;
+    }
 
     const updatedPlayers = [...latestPlayers, newPlayer];
 
@@ -202,6 +233,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         isCreator: creatorStatus,
       })
     );
+    localStorage.setItem(`alias-players-${roomId}`, JSON.stringify(updatedPlayers));
 
     await fetch("/api/game/update", {
       method: "POST",
@@ -212,6 +244,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       }),
     });
 
+    setIsJoining(false);
     setHasJoined(true);
     setIsSpectator(isSpec);
     setUserTeam(team);
@@ -353,19 +386,21 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             <div className="grid grid-cols-2 gap-4">
               <button
                 onClick={() => joinRoom("player", 0)}
-                className="group relative py-5 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden transition-all hover:border-red-900"
+                disabled={isJoining}
+                className="group relative py-5 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden transition-all hover:border-red-900 disabled:opacity-50"
               >
                 <span className="relative z-10 font-black text-[10px] uppercase tracking-widest">
-                  Команда 1
+                  {isJoining ? "..." : "Команда 1"}
                 </span>
                 <div className="absolute inset-0 bg-red-900/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
               </button>
               <button
                 onClick={() => joinRoom("player", 1)}
-                className="group relative py-5 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden transition-all hover:border-red-900"
+                disabled={isJoining}
+                className="group relative py-5 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden transition-all hover:border-red-900 disabled:opacity-50"
               >
                 <span className="relative z-10 font-black text-[10px] uppercase tracking-widest">
-                  Команда 2
+                  {isJoining ? "..." : "Команда 2"}
                 </span>
                 <div className="absolute inset-0 bg-red-900/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
               </button>
@@ -373,9 +408,10 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
             <button
               onClick={() => joinRoom("spectator")}
-              className="w-full py-4 text-zinc-600 hover:text-zinc-400 font-bold text-[10px] uppercase tracking-[0.3em] transition-all"
+              disabled={isJoining}
+              className="w-full py-4 text-zinc-600 hover:text-zinc-400 font-bold text-[10px] uppercase tracking-[0.3em] transition-all disabled:opacity-50"
             >
-              Увійти як глядач
+              {isJoining ? "Підключаємось..." : "Увійти як глядач"}
             </button>
           </div>
         </div>
