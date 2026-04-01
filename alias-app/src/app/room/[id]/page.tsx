@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, use, useCallback } from "react";
+import { useState, useEffect, use } from "react";
 import { useSearchParams } from "next/navigation";
 import AliasCard from "@/components/AliasCard";
 import Pusher from "pusher-js";
@@ -40,16 +40,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [usedWords, setUsedWords] = useState<string[]>([]);
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    fetch(`/api/game/state?roomId=${roomId}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.players) setPlayers(data.players);
-        if (data.teams) setTeams(data.teams);
-      })
-      .catch(() => {});
-  }, [roomId]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -119,12 +109,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const joinRoom = async (mode: "player" | "spectator", team: number = 0) => {
     if (!userName.trim()) return;
 
-    const res = await fetch(`/api/game/state?roomId=${roomId}`);
-    const latestData = await res.json();
-    const currentPlayers = latestData.players || [];
-
     const isSpec = mode === "spectator";
-    const creatorStatus = currentPlayers.length === 0;
+    const creatorStatus = players.length === 0;
 
     const newPlayer = {
       name: userName,
@@ -132,8 +118,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       isSpectator: isSpec,
       isCreator: creatorStatus,
     };
-
-    const updatedPlayers = [...currentPlayers, newPlayer];
 
     localStorage.setItem(
       `alias-session-${roomId}`,
@@ -150,11 +134,10 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       body: JSON.stringify({
         roomId,
         actionType: "SYNC_STATE",
-        players: updatedPlayers,
+        players: [...players, newPlayer],
       }),
     });
 
-    setPlayers(updatedPlayers);
     setHasJoined(true);
     setIsSpectator(isSpec);
     setUserTeam(team);
