@@ -42,6 +42,26 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    const fetchCurrentState = async () => {
+      try {
+        const res = await fetch(`/api/game/state?roomId=${roomId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.players) setPlayers(data.players);
+          if (data.teams) setTeams(data.teams);
+          if (data.difficulty) setDifficulty(data.difficulty);
+          if (data.totalRounds) setTotalRounds(data.totalRounds);
+          if (data.currentRound) setCurrentRound(data.currentRound);
+          if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchCurrentState();
+  }, [roomId]);
+
+  useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isActive && timer > 0) {
       interval = setInterval(() => setTimer((prev) => prev - 1), 1000);
@@ -109,8 +129,17 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const joinRoom = async (mode: "player" | "spectator", team: number = 0) => {
     if (!userName.trim()) return;
 
+    let latestPlayers = players;
+    try {
+      const res = await fetch(`/api/game/state?roomId=${roomId}`);
+      if (res.ok) {
+        const data = await res.json();
+        latestPlayers = data.players || [];
+      }
+    } catch (e) {}
+
     const isSpec = mode === "spectator";
-    const creatorStatus = players.length === 0;
+    const creatorStatus = latestPlayers.length === 0;
 
     const newPlayer = {
       name: userName,
@@ -118,6 +147,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       isSpectator: isSpec,
       isCreator: creatorStatus,
     };
+
+    const updatedPlayers = [...latestPlayers, newPlayer];
 
     localStorage.setItem(
       `alias-session-${roomId}`,
@@ -134,7 +165,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       body: JSON.stringify({
         roomId,
         actionType: "SYNC_STATE",
-        players: [...players, newPlayer],
+        players: updatedPlayers,
       }),
     });
 
@@ -142,6 +173,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     setIsSpectator(isSpec);
     setUserTeam(team);
     setIsCreator(creatorStatus);
+    setPlayers(updatedPlayers);
   };
 
   const updateSettings = async (updates: any) => {
