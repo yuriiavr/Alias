@@ -41,6 +41,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [usedWords, setUsedWords] = useState<string[]>([]);
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isFirstSetup, setIsFirstSetup] = useState(true);
 
   const canControl = userName === currentSpeaker;
   const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
@@ -105,7 +106,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
     channel.bind("game-event", (data: any) => {
       if (data.actionType === "SYNC_STATE") {
-        if (data.players) setPlayers(data.players);
+        if (data.players) {
+          setPlayers(data.players);
+          // Cache for new joiners - serverless Map doesn't persist
+          localStorage.setItem(`alias-players-${roomId}`, JSON.stringify(data.players));
+        }
         if (data.teams) setTeams(data.teams);
         if (data.currentRound) setCurrentRound(data.currentRound);
         if (data.totalRounds) setTotalRounds(data.totalRounds);
@@ -131,6 +136,23 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         setGameState("results");
         setIsActive(false);
       }
+      if (data.actionType === "NEXT_TURN") {
+        setCurrentTeamIndex(data.currentTeamIndex);
+        setCurrentRound(data.currentRound);
+        setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
+        if (data.teams) setTeams(data.teams);
+        setGameState("setup");
+        setCurrentSpeaker(null);
+        setWordsQueue([]);
+        setIsActive(false);
+        setTimer(60);
+        setIsFirstSetup(false);
+      }
+      if (data.actionType === "GAME_FINAL") {
+        if (data.teams) setTeams(data.teams);
+        setGameState("final");
+        setIsActive(false);
+      }
     });
 
     return () => {
@@ -141,14 +163,23 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const joinRoom = async (mode: "player" | "spectator", team: number = 0) => {
     if (!userName.trim()) return;
 
-    let latestPlayers = players;
+    // Read from localStorage cache (serverless Map() doesn't persist between requests)
+    let latestPlayers: Player[] = [];
     try {
-      const res = await fetch(`/api/game/state?roomId=${roomId}`);
-      if (res.ok) {
-        const data = await res.json();
-        latestPlayers = data.players || [];
-      }
+      const cached = localStorage.getItem(`alias-players-${roomId}`);
+      if (cached) latestPlayers = JSON.parse(cached);
     } catch (e) {}
+
+    // Also try API as fallback
+    if (latestPlayers.length === 0) {
+      try {
+        const res = await fetch(`/api/game/state?roomId=${roomId}`);
+        if (res.ok) {
+          const data = await res.json();
+          latestPlayers = data.players || [];
+        }
+      } catch (e) {}
+    }
 
     const isSpec = mode === "spectator";
     const creatorStatus = latestPlayers.length === 0;
@@ -225,7 +256,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   };
 
   const handleNextWord = async (guessed: boolean) => {
-    if (userName !== currentSpeaker && !isCreator) return;
+    if (userName !== currentSpeaker) return;
 
     const newTeams = [...teams];
     newTeams[currentTeamIndex].score += guessed ? 1 : -1;
@@ -269,7 +300,15 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
     if (currentTeamIndex === 1) {
       if (currentRound >= totalRounds) {
-        setGameState("final");
+        // Broadcast final to everyone
+        await fetch("/api/game/update", {
+          method: "POST",
+          body: JSON.stringify({
+            roomId,
+            actionType: "GAME_FINAL",
+            teams,
+          }),
+        });
         return;
       }
       nextRound++;
@@ -279,15 +318,13 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       method: "POST",
       body: JSON.stringify({
         roomId,
-        actionType: "SYNC_STATE",
+        actionType: "NEXT_TURN",
         currentTeamIndex: nextTeam,
         currentRound: nextRound,
         speakerIndexPerTeam: newSpeakerIndex,
+        teams,
       }),
     });
-    setGameState("setup");
-    setCurrentSpeaker(null);
-    setWordsQueue([]);
   };
 
   if (!hasJoined) {
@@ -369,8 +406,37 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             </header>
 
             <div className="bg-zinc-900/20 backdrop-blur-3xl border border-zinc-800/40 p-8 rounded-[2.5rem] space-y-6">
-              {currentRound === 1 && wordsQueue.length === 0 ? (
-                <div className="space-y-6">
+              {/* Player list - always visible */}
+              <div className="space-y-3">
+                <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1 block">
+                  Гравці у лобі
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {players.map((p, i) => (
+                    <div
+                      key={i}
+                      className="px-3 py-1.5 bg-zinc-800/50 rounded-lg border border-zinc-700/50 flex items-center gap-2"
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          p.team === 0
+                            ? "bg-blue-500"
+                            : p.team === 1
+                            ? "bg-red-500"
+                            : "bg-zinc-500"
+                        }`}
+                      ></span>
+                      <span className="text-[10px] font-bold text-white uppercase">
+                        {p.name} {p.isCreator && "👑"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Settings - only for creator on first setup */}
+              {isFirstSetup && isCreator && (
+                <div className="space-y-6 pt-4 border-t border-zinc-800/50">
                   <div className="space-y-3">
                     <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
                       Назви команд
@@ -380,16 +446,13 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                         key={idx}
                         type="text"
                         value={team.name}
-                        disabled={!isCreator}
                         onChange={(e) => {
                           const newTeams = [...teams];
                           newTeams[idx].name = e.target.value;
                           setTeams(newTeams);
                           updateSettings({ teams: newTeams });
                         }}
-                        className={`w-full px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold ${
-                          !isCreator && "opacity-50 cursor-not-allowed"
-                        }`}
+                        className="w-full px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
                       />
                     ))}
                   </div>
@@ -402,7 +465,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                       {["easy", "mixed", "medium", "hard"].map((lvl) => (
                         <button
                           key={lvl}
-                          disabled={!isCreator}
                           onClick={() => {
                             setDifficulty(lvl);
                             updateSettings({ difficulty: lvl });
@@ -411,7 +473,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                             difficulty === lvl
                               ? "bg-zinc-100 text-black"
                               : "bg-transparent text-zinc-600 border-zinc-800"
-                          } ${!isCreator && "opacity-50"}`}
+                          }`}
                         >
                           {lvl}
                         </button>
@@ -427,7 +489,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                       {[3, 5, 10].map((num) => (
                         <button
                           key={num}
-                          disabled={!isCreator}
                           onClick={() => {
                             setTotalRounds(num);
                             updateSettings({ totalRounds: num });
@@ -436,43 +497,19 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                             totalRounds === num
                               ? "bg-white text-black"
                               : "border-zinc-800 text-zinc-600"
-                          } ${!isCreator && "opacity-50"}`}
+                          }`}
                         >
                           {num}
                         </button>
                       ))}
                     </div>
                   </div>
-
-                  <div className="pt-4 border-t border-zinc-800/50">
-                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1 block mb-3">
-                      Гравці у лобі
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {players.map((p, i) => (
-                        <div
-                          key={i}
-                          className="px-3 py-1.5 bg-zinc-800/50 rounded-lg border border-zinc-700/50 flex items-center gap-2"
-                        >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              p.team === 0
-                                ? "bg-blue-500"
-                                : p.team === 1
-                                ? "bg-red-500"
-                                : "bg-zinc-500"
-                            }`}
-                          ></span>
-                          <span className="text-[10px] font-bold text-white uppercase">
-                            {p.name} {p.isCreator && "👑"}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
                 </div>
-              ) : (
-                <div className="text-center py-4">
+              )}
+
+              {/* Non-first-setup: show whose turn it is */}
+              {!isFirstSetup && (
+                <div className="text-center py-4 border-t border-zinc-800/50">
                   <span className="text-[10px] text-zinc-500 uppercase tracking-widest">
                     Зараз черга
                   </span>
@@ -494,7 +531,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             ) : (
               <div className="text-center p-6 border border-dashed border-zinc-800 rounded-2xl opacity-50">
                 <p className="text-[10px] uppercase font-bold tracking-widest">
-                  Чекаємо, поки {players.find(p => p.team === currentTeamIndex)?.name || "спікер"} почне гру...
+                  Чекаємо, поки {teamPlayers[nextSpeakerIdx]?.name || "спікер"} почне гру...
                 </p>
               </div>
             )}
