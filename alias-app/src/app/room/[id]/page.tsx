@@ -1,26 +1,36 @@
 "use client";
 
-import { useState, useEffect, use, useCallback } from "react";
+import { useState, useEffect, use, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import AliasCard from "@/components/AliasCard";
 import Pusher from "pusher-js";
+
+interface Player {
+  name: string;
+  team: number;
+  isSpectator: boolean;
+}
 
 export default function GameRoom({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const roomId = resolvedParams.id;
   const searchParams = useSearchParams();
-  const initialDifficulty = searchParams.get("level") || "mixed";
 
+  // --- СТАН КОРИСТУВАЧА ---
   const [userName, setUserName] = useState("");
+  const [userTeam, setUserTeam] = useState<number>(0);
+  const [isSpectator, setIsSpectator] = useState(false);
   const [hasJoined, setHasJoined] = useState(false);
-  const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
 
+  // --- СТАН ГРИ ---
+  const [players, setPlayers] = useState<Player[]>([]);
   const [gameState, setGameState] = useState<"setup" | "playing" | "results" | "final">("setup");
-  const [difficulty, setDifficulty] = useState(initialDifficulty);
+  const [difficulty, setDifficulty] = useState(searchParams.get("level") || "mixed");
   const [totalRounds, setTotalRounds] = useState(3);
   const [currentRound, setCurrentRound] = useState(1);
   const [timer, setTimer] = useState(60);
   const [isActive, setIsActive] = useState(false);
+  const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
 
   const [teams, setTeams] = useState([
     { name: "Alpha Team", score: 0 },
@@ -32,27 +42,35 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const fetchNewWords = useCallback(async (level: string, excluded: string[]) => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/words", {
+  // --- ЛОГІКА ТАЙМЕРА ---
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isActive && timer > 0) {
+      interval = setInterval(() => setTimer((prev) => prev - 1), 1000);
+    } else if (timer === 0 && isActive) {
+      setIsActive(false);
+      setGameState("results");
+      fetch("/api/game/update", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ difficulty: level, excludedWords: excluded }),
+        body: JSON.stringify({ roomId, actionType: "END_TURN" }),
       });
-      const data = await res.json();
-      if (data.words && data.words.length > 0) {
-        setWordsQueue((prev) => [...prev, ...data.words]);
-        return data.words;
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
     }
-    return [];
-  }, []);
+    return () => clearInterval(interval);
+  }, [isActive, timer, roomId]);
 
+  // --- ПЕРЕВІРКА СЕСІЇ (F5 fix) ---
+  useEffect(() => {
+    const saved = localStorage.getItem(`alias-session-${roomId}`);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      setUserName(parsed.userName);
+      setUserTeam(parsed.userTeam);
+      setIsSpectator(parsed.isSpectator);
+      setHasJoined(true);
+    }
+  }, [roomId]);
+
+  // --- PUSHER ---
   useEffect(() => {
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
@@ -61,110 +79,152 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     const channel = pusher.subscribe(`room-${roomId}`);
 
     channel.bind("game-event", (data: any) => {
-      if (data.actionType === "SPEAKER_CHANGE") {
+      if (data.actionType === "SYNC_STATE") {
+        if (data.players) setPlayers(data.players);
+        if (data.teams) setTeams(data.teams);
+        if (data.currentRound) setCurrentRound(data.currentRound);
+        if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
+      }
+      if (data.actionType === "START_GAME") {
+        setWordsQueue(data.words);
         setCurrentSpeaker(data.speakerName);
         setGameState("playing");
         setIsActive(true);
         setTimer(60);
       }
       if (data.actionType === "WORD_UPDATE") {
-        setTeams(prev => {
-          const next = [...prev];
-          next[currentTeamIndex].score += data.isGuessed ? 1 : -1;
-          return next;
-        });
+        setTeams(data.newTeams);
+        setWordsQueue(prev => prev.slice(1));
+      }
+      if (data.actionType === "END_TURN") {
+        setGameState("results");
+        setIsActive(false);
       }
     });
 
-    return () => {
-      pusher.unsubscribe(`room-${roomId}`);
-    };
-  }, [roomId, currentTeamIndex]);
+    return () => { pusher.unsubscribe(`room-${roomId}`); };
+  }, [roomId]);
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isActive && timer > 0) {
-      interval = setInterval(() => setTimer((prev) => prev - 1), 1000);
-    } else if (timer === 0 && isActive) {
-      setIsActive(false);
-      setGameState("results");
-    }
-    return () => clearInterval(interval);
-  }, [isActive, timer]);
+  // --- ФУНКЦІЇ ---
+  const joinRoom = async (mode: 'player' | 'spectator', team: number = 0) => {
+    if (!userName.trim()) return;
+    const isSpec = mode === 'spectator';
+    const newPlayer = { name: userName, team: isSpec ? -1 : team, isSpectator: isSpec };
+    
+    localStorage.setItem(`alias-session-${roomId}`, JSON.stringify({ 
+      userName, userTeam: team, isSpectator: isSpec 
+    }));
+
+    await fetch("/api/game/update", {
+      method: "POST",
+      body: JSON.stringify({ 
+        roomId, 
+        actionType: "SYNC_STATE", 
+        players: [...players, newPlayer] 
+      }),
+    });
+    
+    setHasJoined(true);
+    setIsSpectator(isSpec);
+    setUserTeam(team);
+  };
 
   const startGame = async () => {
-    if (!userName.trim()) return alert("Введіть нікнейм");
     setLoading(true);
-    const words = await fetchNewWords(difficulty, usedWords);
-    
-    if (words.length > 0) {
-      await fetch("/api/game/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          roomId, 
-          speakerName: userName, 
-          actionType: "SPEAKER_CHANGE" 
-        }),
-      });
-    }
+    const res = await fetch("/api/words", {
+      method: "POST",
+      body: JSON.stringify({ difficulty, excludedWords: usedWords }),
+    });
+    const { words } = await res.json();
+
+    // Обираємо того, хто зараз пояснює (перший з команди, можна ускладнити чергу пізніше)
+    const teamPlayers = players.filter(p => p.team === currentTeamIndex);
+    const speaker = teamPlayers[0]?.name || userName;
+
+    await fetch("/api/game/update", {
+      method: "POST",
+      body: JSON.stringify({ 
+        roomId, 
+        actionType: "START_GAME", 
+        words, 
+        speakerName: speaker 
+      }),
+    });
     setLoading(false);
   };
 
   const handleNextWord = async (guessed: boolean) => {
-    if (wordsQueue.length === 0) return;
-    const currentWord = wordsQueue[0];
-    
+    const newTeams = [...teams];
+    newTeams[currentTeamIndex].score += guessed ? 1 : -1;
+
     await fetch("/api/game/update", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
         roomId, 
-        isGuessed: guessed, 
-        actionType: "WORD_UPDATE" 
+        actionType: "WORD_UPDATE", 
+        isGuessed: guessed,
+        newTeams
       }),
     });
-
-    setUsedWords(prev => [...prev, currentWord]);
-    const nextQueue = wordsQueue.slice(1);
-    setWordsQueue(nextQueue);
-    
-    if (nextQueue.length <= 3 && !loading) {
-      fetchNewWords(difficulty, [...usedWords, currentWord]);
-    }
   };
 
-  const handleNextTurn = () => {
+  const handleNextTurn = async () => {
+    let nextTeam = currentTeamIndex === 0 ? 1 : 0;
+    let nextRound = currentRound;
+    
     if (currentTeamIndex === 1) {
       if (currentRound >= totalRounds) {
         setGameState("final");
         return;
       }
-      setCurrentRound((prev) => prev + 1);
+      nextRound++;
     }
-    setCurrentTeamIndex((prev) => (prev === 0 ? 1 : 0));
+
+    await fetch("/api/game/update", {
+      method: "POST",
+      body: JSON.stringify({ 
+        roomId, 
+        actionType: "SYNC_STATE", 
+        currentTeamIndex: nextTeam,
+        currentRound: nextRound
+      }),
+    });
     setGameState("setup");
     setCurrentSpeaker(null);
   };
 
+  // --- ЕКРАН ВХОДУ ---
   if (!hasJoined) {
     return (
-      <main className="flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6 text-white">
-        <div className="w-full max-w-sm space-y-8 text-center">
-          <h1 className="text-4xl font-black uppercase tracking-tighter">Кімната <span className="text-red-700">{roomId}</span></h1>
-          <div className="space-y-4">
+      <main className="flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6 text-white font-sans">
+        <div className="w-full max-w-sm space-y-12 animate-in fade-in duration-700">
+          <header className="text-center space-y-4">
+            <h1 className="text-6xl font-black italic uppercase tracking-tighter">ALIAS<span className="text-red-700">AI</span></h1>
+            <div className="h-1 w-12 bg-red-700 mx-auto"></div>
+          </header>
+          
+          <div className="space-y-6">
             <input
               type="text"
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
-              placeholder="Твій нікнейм"
-              className="w-full px-6 py-4 bg-zinc-900 border border-zinc-800 rounded-2xl outline-none focus:border-red-700 transition-all font-bold"
+              placeholder="ЯК ТЕБЕ ЗВАТИ?"
+              className="w-full px-6 py-5 bg-zinc-900 border border-zinc-800 rounded-2xl outline-none focus:border-red-700 transition-all font-black text-center tracking-widest"
             />
-            <button
-              onClick={() => userName.trim() && setHasJoined(true)}
-              className="w-full py-4 bg-white cursor-pointer text-black rounded-2xl font-black uppercase tracking-widest"
-            >
-              Приєднатися
+            
+            <div className="grid grid-cols-2 gap-4">
+              <button onClick={() => joinRoom('player', 0)} className="group relative py-5 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden transition-all hover:border-red-900">
+                <span className="relative z-10 font-black text-[10px] uppercase tracking-widest">Команда 1</span>
+                <div className="absolute inset-0 bg-red-900/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+              </button>
+              <button onClick={() => joinRoom('player', 1)} className="group relative py-5 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden transition-all hover:border-red-900">
+                <span className="relative z-10 font-black text-[10px] uppercase tracking-widest">Команда 2</span>
+                <div className="absolute inset-0 bg-red-900/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+              </button>
+            </div>
+            
+            <button onClick={() => joinRoom('spectator')} className="w-full py-4 text-zinc-600 hover:text-zinc-400 font-bold text-[10px] uppercase tracking-[0.3em] transition-all">
+              Увійти як глядач
             </button>
           </div>
         </div>
@@ -172,34 +232,33 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     );
   }
 
+  // --- ГОЛОВНИЙ ЕКРАН ГРИ ---
   return (
-    <main className="relative flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6 text-zinc-300 overflow-hidden font-sans">
+    <main className="relative flex flex-col items-center justify-center min-h-screen bg-[#050505] p-6 text-zinc-300 font-sans overflow-hidden">
+      {/* Background Decor */}
       <div className="absolute inset-0 z-0 pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-red-900/5 blur-[120px] rounded-full"></div>
         <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-zinc-900/10 blur-[120px] rounded-full"></div>
       </div>
 
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 px-4 py-1.5 bg-zinc-900/50 border border-zinc-800 rounded-full backdrop-blur-md">
-         <span className="text-[10px] display-font font-black tracking-[0.3em] uppercase text-zinc-500">
-           Кімната: <span className="text-red-600 select-all">{roomId}</span> | Гравців: {userName}
-         </span>
-      </div>
-
       <div className="relative z-10 w-full max-w-md">
+        
+        {/* SETUP PHASE */}
         {gameState === "setup" && (
           <div className="space-y-8 animate-in fade-in zoom-in-95 duration-500">
             <header className="text-center">
               <h1 className="text-5xl font-black tracking-tighter text-white italic uppercase leading-none">
                 ALIAS<span className="text-red-700">AI</span>
               </h1>
-              <p className="text-[10px] display-font tracking-[0.4em] text-zinc-600 uppercase font-bold mt-3">Раунд {currentRound} з {totalRounds}</p>
+              <p className="text-[10px] tracking-[0.4em] text-zinc-600 uppercase font-bold mt-3">Раунд {currentRound} з {totalRounds}</p>
             </header>
 
-            <div className="bg-zinc-900/20 backdrop-blur-3xl border border-zinc-800/40 p-8 rounded-[2.5rem] space-y-6 shadow-2xl">
+            <div className="bg-zinc-900/20 backdrop-blur-3xl border border-zinc-800/40 p-8 rounded-[2.5rem] space-y-6">
               {currentRound === 1 && usedWords.length === 0 ? (
                 <div className="space-y-6">
+                  {/* Назви команд */}
                   <div className="space-y-3">
-                    <label className="text-[9px] display-font uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Назви команд</label>
+                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Назви команд</label>
                     {teams.map((team, idx) => (
                       <input
                         key={idx}
@@ -210,65 +269,70 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                           newTeams[idx].name = e.target.value;
                           setTeams(newTeams);
                         }}
-                        className="w-full display-font px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
-                        placeholder={`Команда ${idx + 1}`}
+                        className="w-full px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
                       />
                     ))}
                   </div>
+
+                  {/* Складність */}
                   <div className="space-y-3">
-                    <label className="text-[9px] display-font uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Кількість раундів</label>
+                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Складність</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {["easy", "mixed", "medium", "hard"].map((lvl) => (
+                        <button
+                          key={lvl}
+                          onClick={() => setDifficulty(lvl)}
+                          className={`py-3 rounded-xl text-[9px] uppercase font-black transition-all border ${difficulty === lvl ? "bg-zinc-100 text-black" : "bg-transparent text-zinc-600 border-zinc-800"}`}
+                        >
+                          {lvl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Раунди */}
+                  <div className="space-y-3">
+                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Раундів</label>
                     <div className="flex gap-2">
                       {[3, 5, 10].map((num) => (
                         <button
                           key={num}
                           onClick={() => setTotalRounds(num)}
-                          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all border ${totalRounds === num ? "bg-white text-black border-white" : "bg-transparent text-zinc-600 border-zinc-800"}`}
+                          className={`flex-1 py-2 rounded-xl text-xs font-bold border ${totalRounds === num ? "bg-white text-black" : "border-zinc-800 text-zinc-600"}`}
                         >
                           {num}
                         </button>
                       ))}
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    <label className="text-[9px] display-font uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Складність</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {["easy", "mixed", "medium", "hard"].map((lvl) => (
-                        <button
-                          key={lvl}
-                          onClick={() => setDifficulty(lvl)}
-                          className={`py-3 rounded-xl text-[9px] uppercase font-black transition-all border ${difficulty === lvl ? "bg-zinc-100 text-black border-zinc-100" : "bg-transparent text-zinc-600 border-zinc-800"}`}
-                        >
-                          {lvl === "easy" && "Low"}
-                          {lvl === "mixed" && "Mix"}
-                          {lvl === "medium" && "Mid"}
-                          {lvl === "hard" && "High"}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">Зараз ходять:</label>
-                  <div className="p-4 bg-red-950/10 border border-red-900/30 rounded-2xl text-center">
-                    <h2 className="text-2xl font-black text-white italic uppercase tracking-tighter">
-                      {teams[currentTeamIndex].name}
-                    </h2>
-                  </div>
+                <div className="text-center py-4">
+                   <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Зараз черга</span>
+                   <h2 className="text-3xl font-black text-white italic uppercase tracking-tighter mt-1">
+                     {teams[currentTeamIndex].name}
+                   </h2>
                 </div>
               )}
             </div>
 
-            <button
-              onClick={startGame}
-              disabled={loading}
-              className="w-full py-5 bg-red-700 hover:bg-red-600 text-white rounded-2xl font-black text-lg tracking-widest transition-all cursor-pointer shadow-[0_20px_50px_-10px_rgba(185,28,28,0.4)] active:scale-95 disabled:opacity-50"
-            >
-              {loading ? "ЗАВАНТАЖЕННЯ..." : "ПОЧАТИ ГРУ"}
-            </button>
+            {(!isSpectator && userTeam === currentTeamIndex) ? (
+              <button
+                onClick={startGame}
+                disabled={loading}
+                className="w-full py-5 bg-red-700 hover:bg-red-600 text-white rounded-2xl font-black text-lg tracking-widest transition-all shadow-[0_20px_50px_-10px_rgba(185,28,28,0.4)]"
+              >
+                {loading ? "ГЕНЕРУЄМО..." : "ПОЧАТИ ХІД"}
+              </button>
+            ) : (
+              <div className="text-center p-6 border border-dashed border-zinc-800 rounded-2xl opacity-50">
+                <p className="text-[10px] uppercase font-bold tracking-widest">Чекаємо на {teams[currentTeamIndex].name}...</p>
+              </div>
+            )}
           </div>
         )}
 
+        {/* PLAYING PHASE */}
         {gameState === "playing" && (
            <div className="space-y-6 animate-in fade-in duration-500">
              <div className="flex justify-between items-center bg-zinc-900/30 backdrop-blur-md p-5 rounded-[1.5rem] border border-zinc-800/50">
@@ -287,13 +351,15 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
              <AliasCard 
                currentWord={wordsQueue[0] || "..."} 
                isSpeaker={currentSpeaker === userName} 
+               isSpectator={isSpectator}
                speakerName={currentSpeaker}
                onNext={handleNextWord} 
              />
 
+             {/* Live Score Footprint */}
              <div className="grid grid-cols-2 gap-4">
                 {teams.map((team, idx) => (
-                  <div key={idx} className={`p-4 rounded-2xl border transition-all ${idx === currentTeamIndex ? 'bg-red-950/10 border-red-900/40' : 'bg-zinc-900/10 border-zinc-800/40'}`}>
+                  <div key={idx} className={`p-4 rounded-2xl border transition-all ${idx === currentTeamIndex ? 'bg-red-950/10 border-red-900/40 shadow-[0_0_20px_rgba(153,27,27,0.1)]' : 'bg-zinc-900/10 border-zinc-800/40'}`}>
                      <p className="text-[8px] uppercase tracking-widest text-zinc-600 mb-1">{team.name}</p>
                      <p className={`text-2xl font-black ${idx === currentTeamIndex ? 'text-red-700' : 'text-zinc-500'}`}>{team.score}</p>
                   </div>
@@ -302,11 +368,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
            </div>
          )}
 
+         {/* RESULTS PHASE */}
          {gameState === "results" && (
-          <div className="text-center space-y-8 animate-in zoom-in-95 duration-500">
-             <h2 className="text-4xl font-black italic uppercase text-white tracking-tighter">Час вийшов!</h2>
+          <div className="text-center space-y-8 animate-in zoom-in-95">
+            <h2 className="text-4xl font-black italic uppercase text-white tracking-tighter">Час вийшов!</h2>
             <div className="bg-zinc-900/30 backdrop-blur-xl border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
-              <p className="text-xs uppercase text-zinc-500 tracking-widest">Результати</p>
               {teams.map((t, i) => (
                 <div key={i} className="flex justify-between items-center py-3 border-b border-zinc-800/50 last:border-0 italic font-black text-2xl uppercase">
                   <span className={i === currentTeamIndex ? "text-white" : "text-zinc-600"}>{t.name}</span>
@@ -314,35 +380,30 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                 </div>
               ))}
             </div>
-            <button 
-              onClick={handleNextTurn}
-              className="w-full py-5 bg-zinc-100 hover:bg-white text-black rounded-2xl font-black uppercase tracking-widest cursor-pointer shadow-lg active:scale-95"
-            >
-              {currentTeamIndex === 1 && currentRound === totalRounds ? "ФІНАЛ" : "ПЕРЕДАТИ ХІД"}
-            </button>
+            {(!isSpectator && userTeam === currentTeamIndex) && (
+              <button onClick={handleNextTurn} className="w-full py-5 bg-zinc-100 text-black rounded-2xl font-black uppercase tracking-widest transition-all active:scale-95">
+                ПЕРЕДАТИ ХІД
+              </button>
+            )}
           </div>
         )}
 
+        {/* FINAL PHASE */}
         {gameState === "final" && (
           <div className="text-center space-y-10 animate-in fade-in duration-1000">
              <div className="space-y-2">
-                <h1 className="text-6xl font-black italic uppercase text-white">GAME OVER</h1>
-                <p className="text-red-700 font-bold tracking-[0.5em] uppercase text-[10px]">Битву завершено</p>
+                <h1 className="text-6xl font-black italic uppercase text-white tracking-tighter">GAME OVER</h1>
+                <div className="h-1 w-24 bg-red-700 mx-auto"></div>
              </div>
-             <div className="bg-white text-black p-8 rounded-[3rem] shadow-[0_0_50px_rgba(255,255,255,0.1)]">
-                <p className="uppercase text-[10px] font-black tracking-widest mb-6">Переможець</p>
+             <div className="bg-white text-black p-10 rounded-[3rem] shadow-[0_0_50px_rgba(255,255,255,0.15)] transform -rotate-1">
+                <p className="uppercase text-[10px] font-black tracking-[0.3em] mb-6 opacity-40">The Winner is</p>
                 <h2 className="text-4xl font-black italic uppercase leading-none mb-2">
                   {teams[0].score > teams[1].score ? teams[0].name : teams[1].name}
                 </h2>
-                <p className="text-5xl font-mono font-black text-red-700">
-                  {Math.max(teams[0].score, teams[1].score)}
-                </p>
+                <p className="text-6xl font-mono font-black text-red-700">{Math.max(teams[0].score, teams[1].score)}</p>
              </div>
-             <button 
-                onClick={() => window.location.reload()}
-                className="text-zinc-500 hover:text-white transition-colors uppercase text-[10px] font-bold tracking-widest underline underline-offset-8"
-             >
-                Грати знову
+             <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="text-zinc-600 hover:text-white uppercase text-[10px] font-bold tracking-[0.5em] underline underline-offset-8">
+                ГРАТИ ЗНОВУ
              </button>
           </div>
         )}

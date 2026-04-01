@@ -3,6 +3,7 @@
 interface GameProps {
   currentWord: string;
   isSpeaker: boolean;
+  isSpectator: boolean;
   speakerName: string | null;
   onNext: (guessed: boolean) => void;
 }
@@ -10,6 +11,7 @@ interface GameProps {
 export default function AliasCard({
   currentWord,
   isSpeaker,
+  isSpectator,
   speakerName,
   onNext,
 }: GameProps) {
@@ -17,10 +19,10 @@ export default function AliasCard({
     <div className="flex flex-col items-center justify-center min-h-[400px] p-8 bg-zinc-950 text-white rounded-[2.5rem] shadow-2xl border border-zinc-900 relative overflow-hidden">
       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-red-900/50 to-transparent"></div>
       
-      {isSpeaker ? (
+      {(isSpeaker || isSpectator) ? (
         <>
           <span className="text-[10px] display-font uppercase tracking-[0.3em] text-red-700 mb-6 font-bold">
-            Твоє слово:
+            {isSpeaker ? "Твоє слово:" : `Гравець ${speakerName} пояснює:`}
           </span>
           
           <div className="w-full flex justify-center mb-16 px-2">
@@ -35,21 +37,28 @@ export default function AliasCard({
             </h2>
           </div>
           
-          <div className="flex flex-col gap-3 w-full max-w-[240px]">
-            <button
-              onClick={() => onNext(true)}
-              className="w-full py-4 bg-zinc-100 hover:bg-white text-black rounded-2xl transition-all font-black text-sm uppercase tracking-widest cursor-pointer active:scale-[0.96]"
-            >
-              Вгадано
-            </button>
-            
-            <button
-              onClick={() => onNext(false)}
-              className="w-full py-3 bg-transparent hover:bg-red-950/30 text-zinc-500 hover:text-red-500 rounded-2xl transition-all font-bold text-[11px] uppercase tracking-widest cursor-pointer"
-            >
-              Пропустити (-1)
-            </button>
-          </div>
+          {isSpeaker && (
+            <div className="flex flex-col gap-3 w-full max-w-[240px]">
+              <button
+                onClick={() => onNext(true)}
+                className="w-full py-4 bg-zinc-100 hover:bg-white text-black rounded-2xl transition-all font-black text-sm uppercase tracking-widest cursor-pointer active:scale-[0.96]"
+              >
+                Вгадано
+              </button>
+              
+              <button
+                onClick={() => onNext(false)}
+                className="w-full py-3 bg-transparent hover:bg-red-950/30 text-zinc-500 hover:text-red-500 rounded-2xl transition-all font-bold text-[11px] uppercase tracking-widest cursor-pointer"
+              >
+                Пропустити (-1)
+              </button>
+            </div>
+          )}
+          {isSpectator && (
+            <div className="text-zinc-500 text-[10px] uppercase tracking-widest animate-pulse">
+              Режим спостерігача
+            </div>
+          )}
         </>
       ) : (
         <div className="text-center space-y-6">
