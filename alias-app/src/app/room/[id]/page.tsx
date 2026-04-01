@@ -201,6 +201,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
           <header className="text-center space-y-4">
             <h1 className="text-6xl font-black italic uppercase tracking-tighter">ALIAS<span className="text-red-700">AI</span></h1>
             <div className="h-1 w-12 bg-red-700 mx-auto"></div>
+            <span className="w-full text-red-700 py-4 font-bold text-[10px] uppercase tracking-[0.3em] transition-all">{roomId}</span>
           </header>
           
           <div className="space-y-6">
@@ -250,7 +251,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
               <h1 className="text-5xl font-black tracking-tighter text-white italic uppercase leading-none">
                 ALIAS<span className="text-red-700">AI</span>
               </h1>
-              <p className="text-[10px] tracking-[0.4em] text-zinc-600 uppercase font-bold mt-3">Раунд {currentRound} з {totalRounds}</p>
+              <p className="text-[10px] tracking-[0.4em] text-zinc-600 uppercase font-bold mt-3">Раунд {currentRound}/{totalRounds}</p>
+              <span className="w-full text-red-700 py-4 font-bold text-[10px] uppercase tracking-[0.3em] transition-all">{roomId}</span>
             </header>
 
             <div className="bg-zinc-900/20 backdrop-blur-3xl border border-zinc-800/40 p-8 rounded-[2.5rem] space-y-6">
