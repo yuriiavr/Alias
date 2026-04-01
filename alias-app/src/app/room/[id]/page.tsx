@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, use } from "react";
+import { debounce } from "lodash";
+import { useState, useEffect, use, useCallback, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import AliasCard from "@/components/AliasCard";
 import Pusher from "pusher-js";
@@ -12,7 +13,11 @@ interface Player {
   isCreator: boolean;
 }
 
-export default function GameRoom({ params }: { params: Promise<{ id: string }> }) {
+export default function GameRoom({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const resolvedParams = use(params);
   const roomId = resolvedParams.id;
   const searchParams = useSearchParams();
@@ -24,9 +29,13 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [isCreator, setIsCreator] = useState(false);
 
   const [players, setPlayers] = useState<Player[]>([]);
-  const [gameState, setGameState] = useState<"setup" | "playing" | "results" | "final">("setup");
+  const [gameState, setGameState] = useState<
+    "setup" | "playing" | "results" | "final"
+  >("setup");
   const [soloMode, setSoloMode] = useState(false);
-  const [difficulty, setDifficulty] = useState(searchParams.get("level") || "mixed");
+  const [difficulty, setDifficulty] = useState(
+    searchParams.get("level") || "mixed",
+  );
   const [theme, setTheme] = useState("");
   const [totalRounds, setTotalRounds] = useState(3);
   const [currentRound, setCurrentRound] = useState(1);
@@ -40,7 +49,9 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     { name: "Bravo Team", score: 0 },
   ]);
   const [currentTeamIndex, setCurrentTeamIndex] = useState(0);
-  const [speakerIndexPerTeam, setSpeakerIndexPerTeam] = useState<number[]>([0, 0]);
+  const [speakerIndexPerTeam, setSpeakerIndexPerTeam] = useState<number[]>([
+    0, 0,
+  ]);
   const [usedWords, setUsedWords] = useState<string[]>([]);
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -48,12 +59,28 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [isJoining, setIsJoining] = useState(false);
 
   const canControl = userName === currentSpeaker;
-  const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
-  const nextSpeakerIdx = speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
-  const isNextSpeaker = isFirstSetup
-    ? isCreator
-    : userName === nextSpeakerName;
+  const teamPlayers = players.filter(
+    (p) => p.team === currentTeamIndex && !p.isSpectator,
+  );
+  const nextSpeakerIdx =
+    speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
+  const isNextSpeaker = isFirstSetup ? isCreator : userName === nextSpeakerName;
   const canStartGame = isNextSpeaker;
+
+  const debouncedUpdateSettings = useMemo(
+    () =>
+      debounce((updates: any) => {
+        fetch("/api/game/update", {
+          method: "POST",
+          body: JSON.stringify({
+            roomId,
+            actionType: "SYNC_STATE",
+            ...updates,
+          }),
+        });
+      }, 500),
+    [roomId],
+  );
 
   useEffect(() => {
     const fetchCurrentState = async () => {
@@ -66,8 +93,10 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
           if (data.difficulty) setDifficulty(data.difficulty);
           if (data.totalRounds) setTotalRounds(data.totalRounds);
           if (data.currentRound) setCurrentRound(data.currentRound);
-          if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
-          if (data.speakerIndexPerTeam) setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
+          if (data.currentTeamIndex !== undefined)
+            setCurrentTeamIndex(data.currentTeamIndex);
+          if (data.speakerIndexPerTeam)
+            setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
         }
       } catch (e) {
         console.error(e);
@@ -114,14 +143,19 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       if (data.actionType === "SYNC_STATE") {
         if (data.players) {
           setPlayers(data.players);
-          localStorage.setItem(`alias-players-${roomId}`, JSON.stringify(data.players));
+          localStorage.setItem(
+            `alias-players-${roomId}`,
+            JSON.stringify(data.players),
+          );
         }
         if (data.teams) setTeams(data.teams);
         if (data.currentRound) setCurrentRound(data.currentRound);
         if (data.totalRounds) setTotalRounds(data.totalRounds);
         if (data.difficulty) setDifficulty(data.difficulty);
-        if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
-        if (data.speakerIndexPerTeam) setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
+        if (data.currentTeamIndex !== undefined)
+          setCurrentTeamIndex(data.currentTeamIndex);
+        if (data.speakerIndexPerTeam)
+          setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
         if (data.soloMode !== undefined) setSoloMode(data.soloMode);
         if (data.theme !== undefined) setTheme(data.theme);
       }
@@ -244,9 +278,12 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         userTeam: team,
         isSpectator: isSpec,
         isCreator: creatorStatus,
-      })
+      }),
     );
-    localStorage.setItem(`alias-players-${roomId}`, JSON.stringify(updatedPlayers));
+    localStorage.setItem(
+      `alias-players-${roomId}`,
+      JSON.stringify(updatedPlayers),
+    );
 
     await fetch("/api/game/update", {
       method: "POST",
@@ -300,8 +337,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       return;
     }
 
-    const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
-    const speakerIdx = speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
+    const teamPlayers = players.filter(
+      (p) => p.team === currentTeamIndex && !p.isSpectator,
+    );
+    const speakerIdx =
+      speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
     const speaker = teamPlayers[speakerIdx]?.name || userName;
 
     await fetch("/api/game/update", {
@@ -334,10 +374,13 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const handleNextWord = async (guessed: boolean) => {
     if (userName !== currentSpeaker) return;
 
-    const newTeams = soloMode ? teams : teams.map((t, i) => ({
-      ...t,
-      score: i === currentTeamIndex ? t.score + (guessed ? 1 : -1) : t.score,
-    }));
+    const newTeams = soloMode
+      ? teams
+      : teams.map((t, i) => ({
+          ...t,
+          score:
+            i === currentTeamIndex ? t.score + (guessed ? 1 : -1) : t.score,
+        }));
 
     let addedWords = null;
 
@@ -363,7 +406,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         actionType: "WORD_UPDATE",
         isGuessed: guessed,
         newTeams,
-        addedWords
+        addedWords,
       }),
     });
   };
@@ -374,10 +417,13 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
     // Rotate speaker for current team
     const newSpeakerIndex = [...speakerIndexPerTeam];
-    newSpeakerIndex[currentTeamIndex] = speakerIndexPerTeam[currentTeamIndex] + 1;
+    newSpeakerIndex[currentTeamIndex] =
+      speakerIndexPerTeam[currentTeamIndex] + 1;
 
     // Compute who speaks next
-    const nextTeamPlayers = players.filter((p) => p.team === nextTeam && !p.isSpectator);
+    const nextTeamPlayers = players.filter(
+      (p) => p.team === nextTeam && !p.isSpectator,
+    );
     const nextIdx = newSpeakerIndex[nextTeam] % (nextTeamPlayers.length || 1);
     const computedNextSpeaker = nextTeamPlayers[nextIdx]?.name || null;
 
@@ -492,7 +538,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             </header>
 
             <div className="bg-zinc-900/20 backdrop-blur-3xl border border-zinc-800/40 p-8 rounded-[2.5rem] space-y-6">
-              {/* Player list - always visible */}
               <div className="space-y-3">
                 <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1 block">
                   Гравці у лобі
@@ -508,8 +553,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                           p.team === 0
                             ? "bg-blue-500"
                             : p.team === 1
-                            ? "bg-red-500"
-                            : "bg-zinc-500"
+                              ? "bg-red-500"
+                              : "bg-zinc-500"
                         }`}
                       ></span>
                       <span className="text-[10px] font-bold text-white uppercase">
@@ -520,11 +565,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                 </div>
               </div>
 
-              {/* Settings - only for creator on first setup */}
               {isFirstSetup && isCreator && (
                 <div className="space-y-6 pt-4 border-t border-zinc-800/50">
-
-                  {/* Solo mode toggle */}
                   <div className="space-y-3">
                     <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
                       Режим гри
@@ -552,7 +594,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                     </div>
                   </div>
 
-                  {/* Team names — hidden in solo */}
                   {!soloMode && (
                     <div className="space-y-3">
                       <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
@@ -564,10 +605,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                           type="text"
                           value={team.name}
                           onChange={(e) => {
+                            const newName = e.target.value;
                             const newTeams = [...teams];
-                            newTeams[idx].name = e.target.value;
+                            newTeams[idx].name = newName;
                             setTeams(newTeams);
-                            updateSettings({ teams: newTeams });
+                            debouncedUpdateSettings({ teams: newTeams });
                           }}
                           className="w-full px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
                         />
@@ -575,28 +617,29 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                     </div>
                   )}
 
-                  {/* Difficulty */}
                   <div className="space-y-3">
                     <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
                       Складність
                     </label>
                     <div className="grid grid-cols-5 gap-1.5">
-                      {["easy", "mixed", "medium", "hard", "theme"].map((lvl) => (
-                        <button
-                          key={lvl}
-                          onClick={() => {
-                            setDifficulty(lvl);
-                            updateSettings({ difficulty: lvl });
-                          }}
-                          className={`py-3 rounded-xl text-[8px] uppercase font-black transition-all border ${
-                            difficulty === lvl
-                              ? "bg-zinc-100 text-black"
-                              : "bg-transparent text-zinc-600 border-zinc-800"
-                          }`}
-                        >
-                          {lvl === "theme" ? "🎯" : lvl}
-                        </button>
-                      ))}
+                      {["easy", "mixed", "medium", "hard", "theme"].map(
+                        (lvl) => (
+                          <button
+                            key={lvl}
+                            onClick={() => {
+                              setDifficulty(lvl);
+                              updateSettings({ difficulty: lvl });
+                            }}
+                            className={`py-3 rounded-xl text-[8px] uppercase font-black transition-all border ${
+                              difficulty === lvl
+                                ? "bg-zinc-100 text-black"
+                                : "bg-transparent text-zinc-600 border-zinc-800"
+                            }`}
+                          >
+                            {lvl === "theme" ? "🎯" : lvl}
+                          </button>
+                        ),
+                      )}
                     </div>
                     {difficulty === "theme" && (
                       <input
@@ -612,7 +655,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                     )}
                   </div>
 
-                  {/* Rounds — hidden in solo */}
                   {!soloMode && (
                     <div className="space-y-3">
                       <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
@@ -641,7 +683,6 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                 </div>
               )}
 
-              {/* Non-first-setup: show whose turn it is */}
               {!isFirstSetup && (
                 <div className="text-center py-4 border-t border-zinc-800/50">
                   <span className="text-[10px] text-zinc-500 uppercase tracking-widest">
@@ -665,7 +706,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             ) : (
               <div className="text-center p-6 border border-dashed border-zinc-800 rounded-2xl opacity-50">
                 <p className="text-[10px] uppercase font-bold tracking-widest">
-                  Чекаємо, поки {isFirstSetup ? players.find(p => p.isCreator)?.name : nextSpeakerName} почне гру...
+                  Чекаємо, поки{" "}
+                  {isFirstSetup
+                    ? players.find((p) => p.isCreator)?.name
+                    : nextSpeakerName}{" "}
+                  почне гру...
                 </p>
               </div>
             )}
@@ -723,7 +768,9 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                     </p>
                     <p
                       className={`text-2xl font-black ${
-                        idx === currentTeamIndex ? "text-red-700" : "text-zinc-500"
+                        idx === currentTeamIndex
+                          ? "text-red-700"
+                          : "text-zinc-500"
                       }`}
                     >
                       {team.score}
@@ -746,7 +793,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                   key={i}
                   className="flex justify-between items-center py-3 border-b border-zinc-800/50 last:border-0 italic font-black text-2xl uppercase"
                 >
-                  <span className={i === currentTeamIndex ? "text-white" : "text-zinc-600"}>
+                  <span
+                    className={
+                      i === currentTeamIndex ? "text-white" : "text-zinc-600"
+                    }
+                  >
                     {t.name}
                   </span>
                   <span className="text-red-700">{t.score}</span>
@@ -770,7 +821,11 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                         }));
                         await fetch("/api/game/update", {
                           method: "POST",
-                          body: JSON.stringify({ roomId, actionType: "BONUS_POINT", newTeams }),
+                          body: JSON.stringify({
+                            roomId,
+                            actionType: "BONUS_POINT",
+                            newTeams,
+                          }),
                         });
                         handleNextTurn(newTeams);
                       }}
@@ -825,7 +880,9 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                 The Winner is
               </p>
               <h2 className="text-4xl font-black italic uppercase leading-none mb-2">
-                {teams[0].score > teams[1].score ? teams[0].name : teams[1].name}
+                {teams[0].score > teams[1].score
+                  ? teams[0].name
+                  : teams[1].name}
               </h2>
               <p className="text-6xl font-mono font-black text-red-700">
                 {Math.max(teams[0].score, teams[1].score)}
