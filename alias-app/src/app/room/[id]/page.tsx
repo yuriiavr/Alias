@@ -25,7 +25,9 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [gameState, setGameState] = useState<"setup" | "playing" | "results" | "final">("setup");
+  const [soloMode, setSoloMode] = useState(false);
   const [difficulty, setDifficulty] = useState(searchParams.get("level") || "mixed");
+  const [theme, setTheme] = useState("");
   const [totalRounds, setTotalRounds] = useState(3);
   const [currentRound, setCurrentRound] = useState(1);
   const [timer, setTimer] = useState(60);
@@ -120,6 +122,8 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         if (data.difficulty) setDifficulty(data.difficulty);
         if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
         if (data.speakerIndexPerTeam) setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
+        if (data.soloMode !== undefined) setSoloMode(data.soloMode);
+        if (data.theme !== undefined) setTheme(data.theme);
       }
 
       // New joiner asks for current state - creator responds with full state broadcast
@@ -146,8 +150,10 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         setWordsQueue(data.words);
         setCurrentSpeaker(data.speakerName);
         setGameState("playing");
-        setIsActive(true);
-        setTimer(60);
+        if (!data.soloMode) {
+          setIsActive(true);
+          setTimer(60);
+        }
       }
       if (data.actionType === "WORD_UPDATE") {
         setTeams(data.newTeams);
@@ -159,6 +165,9 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       if (data.actionType === "END_TURN") {
         setGameState("results");
         setIsActive(false);
+      }
+      if (data.actionType === "BONUS_POINT") {
+        setTeams(data.newTeams);
       }
       if (data.actionType === "NEXT_TURN") {
         setCurrentTeamIndex(data.currentTeamIndex);
@@ -272,9 +281,24 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     setLoading(true);
     const res = await fetch("/api/words", {
       method: "POST",
-      body: JSON.stringify({ difficulty, excludedWords: usedWords }),
+      body: JSON.stringify({ difficulty, theme, excludedWords: usedWords }),
     });
     const { words } = await res.json();
+
+    if (soloMode) {
+      await fetch("/api/game/update", {
+        method: "POST",
+        body: JSON.stringify({
+          roomId,
+          actionType: "START_GAME",
+          words,
+          speakerName: userName,
+          soloMode: true,
+        }),
+      });
+      setLoading(false);
+      return;
+    }
 
     const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
     const speakerIdx = speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
@@ -292,12 +316,29 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     setLoading(false);
   };
 
+  const handleBonusPoint = async (teamIdx: number) => {
+    const newTeams = teams.map((t, i) => ({
+      ...t,
+      score: i === teamIdx ? t.score + 1 : t.score,
+    }));
+    await fetch("/api/game/update", {
+      method: "POST",
+      body: JSON.stringify({
+        roomId,
+        actionType: "BONUS_POINT",
+        newTeams,
+      }),
+    });
+  };
+
   const handleNextWord = async (guessed: boolean) => {
     if (userName !== currentSpeaker) return;
 
-    const newTeams = [...teams];
-    newTeams[currentTeamIndex].score += guessed ? 1 : -1;
-    
+    const newTeams = soloMode ? teams : teams.map((t, i) => ({
+      ...t,
+      score: i === currentTeamIndex ? t.score + (guessed ? 1 : -1) : t.score,
+    }));
+
     let addedWords = null;
 
     if (wordsQueue.length < 5 && !loading) {
@@ -305,7 +346,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
       try {
         const res = await fetch("/api/words", {
           method: "POST",
-          body: JSON.stringify({ difficulty, excludedWords: usedWords }),
+          body: JSON.stringify({ difficulty, theme, excludedWords: usedWords }),
         });
         const data = await res.json();
         addedWords = data.words;
@@ -483,73 +524,121 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
               {/* Settings - only for creator on first setup */}
               {isFirstSetup && isCreator && (
                 <div className="space-y-6 pt-4 border-t border-zinc-800/50">
+
+                  {/* Solo mode toggle */}
                   <div className="space-y-3">
                     <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
-                      Назви команд
+                      Режим гри
                     </label>
-                    {teams.map((team, idx) => (
-                      <input
-                        key={idx}
-                        type="text"
-                        value={team.name}
-                        onChange={(e) => {
-                          const newTeams = [...teams];
-                          newTeams[idx].name = e.target.value;
-                          setTeams(newTeams);
-                          updateSettings({ teams: newTeams });
-                        }}
-                        className="w-full px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
-                      />
-                    ))}
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { id: false, label: "Команди" },
+                        { id: true, label: "Соло" },
+                      ].map((mode) => (
+                        <button
+                          key={String(mode.id)}
+                          onClick={() => {
+                            setSoloMode(mode.id);
+                            updateSettings({ soloMode: mode.id });
+                          }}
+                          className={`py-3 rounded-xl text-[9px] uppercase font-black transition-all border ${
+                            soloMode === mode.id
+                              ? "bg-zinc-100 text-black"
+                              : "bg-transparent text-zinc-600 border-zinc-800"
+                          }`}
+                        >
+                          {mode.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
+                  {/* Team names — hidden in solo */}
+                  {!soloMode && (
+                    <div className="space-y-3">
+                      <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
+                        Назви команд
+                      </label>
+                      {teams.map((team, idx) => (
+                        <input
+                          key={idx}
+                          type="text"
+                          value={team.name}
+                          onChange={(e) => {
+                            const newTeams = [...teams];
+                            newTeams[idx].name = e.target.value;
+                            setTeams(newTeams);
+                            updateSettings({ teams: newTeams });
+                          }}
+                          className="w-full px-5 py-4 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white font-bold"
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Difficulty */}
                   <div className="space-y-3">
                     <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
                       Складність
                     </label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {["easy", "mixed", "medium", "hard"].map((lvl) => (
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {["easy", "mixed", "medium", "hard", "theme"].map((lvl) => (
                         <button
                           key={lvl}
                           onClick={() => {
                             setDifficulty(lvl);
                             updateSettings({ difficulty: lvl });
                           }}
-                          className={`py-3 rounded-xl text-[9px] uppercase font-black transition-all border ${
+                          className={`py-3 rounded-xl text-[8px] uppercase font-black transition-all border ${
                             difficulty === lvl
                               ? "bg-zinc-100 text-black"
                               : "bg-transparent text-zinc-600 border-zinc-800"
                           }`}
                         >
-                          {lvl}
+                          {lvl === "theme" ? "🎯" : lvl}
                         </button>
                       ))}
                     </div>
+                    {difficulty === "theme" && (
+                      <input
+                        type="text"
+                        placeholder="Введи тематику (напр. «Спорт»)"
+                        value={theme}
+                        onChange={(e) => {
+                          setTheme(e.target.value);
+                          updateSettings({ theme: e.target.value });
+                        }}
+                        className="w-full px-4 py-3 bg-black/40 border border-zinc-800 rounded-2xl focus:border-red-800/50 transition-all outline-none text-white text-sm"
+                      />
+                    )}
                   </div>
 
-                  <div className="space-y-3">
-                    <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
-                      Раундів
-                    </label>
-                    <div className="flex gap-2">
-                      {[3, 5, 10].map((num) => (
-                        <button
-                          key={num}
-                          onClick={() => {
-                            setTotalRounds(num);
-                            updateSettings({ totalRounds: num });
-                          }}
-                          className={`flex-1 py-2 rounded-xl text-xs font-bold border ${
-                            totalRounds === num
-                              ? "bg-white text-black"
-                              : "border-zinc-800 text-zinc-600"
-                          }`}
-                        >
-                          {num}
-                        </button>
-                      ))}
+                  {/* Rounds — hidden in solo */}
+                  {!soloMode && (
+                    <div className="space-y-3">
+                      <label className="text-[9px] uppercase tracking-[0.2em] text-zinc-500 font-black ml-1">
+                        Раундів
+                      </label>
+                      <div className="flex gap-2">
+                        {[3, 5, 10].map((num) => (
+                          <button
+                            key={num}
+                            onClick={() => {
+                              setTotalRounds(num);
+                              updateSettings({ totalRounds: num });
+                            }}
+                            className={`flex-1 py-2 rounded-xl text-xs font-bold border ${
+                              totalRounds === num
+                                ? "bg-white text-black"
+                                : "border-zinc-800 text-zinc-600"
+                            }`}
+                          >
+                            {num}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
 
@@ -589,24 +678,26 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
             <div className="flex justify-between items-center bg-zinc-900/30 backdrop-blur-md p-5 rounded-[1.5rem] border border-zinc-800/50">
               <div>
                 <span className="text-[9px] uppercase font-bold text-red-700 tracking-widest block mb-1">
-                  Раунд {currentRound}
+                  {soloMode ? "Соло" : `Раунд ${currentRound}`}
                 </span>
                 <span className="text-xl font-black text-white italic uppercase">
-                  {teams[currentTeamIndex].name}
+                  {soloMode ? userName : teams[currentTeamIndex].name}
                 </span>
               </div>
-              <div className="text-right">
-                <span className="text-[9px] uppercase font-bold text-zinc-600 tracking-widest block mb-1">
-                  Час
-                </span>
-                <span
-                  className={`text-2xl font-mono font-black ${
-                    timer < 10 ? "text-red-600 animate-pulse" : "text-white"
-                  }`}
-                >
-                  0:{timer < 10 ? `0${timer}` : timer}
-                </span>
-              </div>
+              {!soloMode && (
+                <div className="text-right">
+                  <span className="text-[9px] uppercase font-bold text-zinc-600 tracking-widest block mb-1">
+                    Час
+                  </span>
+                  <span
+                    className={`text-2xl font-mono font-black ${
+                      timer < 10 ? "text-red-600 animate-pulse" : "text-white"
+                    }`}
+                  >
+                    0:{timer < 10 ? `0${timer}` : timer}
+                  </span>
+                </div>
+              )}
             </div>
 
             <AliasCard
@@ -617,36 +708,38 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
               onNext={handleNextWord}
             />
 
-            <div className="grid grid-cols-2 gap-4">
-              {teams.map((team, idx) => (
-                <div
-                  key={idx}
-                  className={`p-4 rounded-2xl border transition-all ${
-                    idx === currentTeamIndex
-                      ? "bg-red-950/10 border-red-900/40 shadow-[0_0_20px_rgba(153,27,27,0.1)]"
-                      : "bg-zinc-900/10 border-zinc-800/40"
-                  }`}
-                >
-                  <p className="text-[8px] uppercase tracking-widest text-zinc-600 mb-1">
-                    {team.name}
-                  </p>
-                  <p
-                    className={`text-2xl font-black ${
-                      idx === currentTeamIndex ? "text-red-700" : "text-zinc-500"
+            {!soloMode && (
+              <div className="grid grid-cols-2 gap-4">
+                {teams.map((team, idx) => (
+                  <div
+                    key={idx}
+                    className={`p-4 rounded-2xl border transition-all ${
+                      idx === currentTeamIndex
+                        ? "bg-red-950/10 border-red-900/40 shadow-[0_0_20px_rgba(153,27,27,0.1)]"
+                        : "bg-zinc-900/10 border-zinc-800/40"
                     }`}
                   >
-                    {team.score}
-                  </p>
-                </div>
-              ))}
-            </div>
+                    <p className="text-[8px] uppercase tracking-widest text-zinc-600 mb-1">
+                      {team.name}
+                    </p>
+                    <p
+                      className={`text-2xl font-black ${
+                        idx === currentTeamIndex ? "text-red-700" : "text-zinc-500"
+                      }`}
+                    >
+                      {team.score}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
         {gameState === "results" && (
           <div className="text-center space-y-8 animate-in zoom-in-95">
             <h2 className="text-4xl font-black italic uppercase text-white tracking-tighter">
-              Час вийшов!
+              {soloMode ? "Слова закінчились!" : "Час вийшов!"}
             </h2>
             <div className="bg-zinc-900/30 backdrop-blur-xl border border-zinc-800 p-8 rounded-[2.5rem] space-y-4">
               {teams.map((t, i) => (
@@ -661,14 +754,46 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                 </div>
               ))}
             </div>
-            {canControl ? (
+
+            {canControl && !soloMode && (
+              <div className="space-y-3">
+                <p className="text-[10px] uppercase font-bold tracking-widest text-zinc-500">
+                  Останнє слово — кому бал?
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  {teams.map((t, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleBonusPoint(i)}
+                      className={`py-4 rounded-2xl font-black text-sm uppercase tracking-widest transition-all active:scale-95 border ${
+                        i === currentTeamIndex
+                          ? "bg-red-700 hover:bg-red-600 text-white border-transparent"
+                          : "bg-transparent text-zinc-400 hover:text-white border-zinc-700 hover:border-zinc-500"
+                      }`}
+                    >
+                      {t.name}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={handleNextTurn}
+                  className="w-full py-4 bg-zinc-100 text-black rounded-2xl font-black uppercase tracking-widest transition-all active:scale-95 text-sm"
+                >
+                  Передати хід →
+                </button>
+              </div>
+            )}
+
+            {canControl && soloMode && (
               <button
                 onClick={handleNextTurn}
                 className="w-full py-5 bg-zinc-100 text-black rounded-2xl font-black uppercase tracking-widest transition-all active:scale-95"
               >
-                ПЕРЕДАТИ ХІД
+                Ще раз
               </button>
-            ) : (
+            )}
+
+            {!canControl && (
               <div className="text-center p-4 opacity-50">
                 <p className="text-[10px] uppercase font-bold tracking-widest">
                   Чекаємо, поки {currentSpeaker} передасть хід...
