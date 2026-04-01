@@ -41,6 +41,10 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const canControl = isCreator || userName === currentSpeaker;
+  const isNextSpeaker = players.filter((p) => p.team === currentTeamIndex)[0]?.name === userName;
+  const canStartGame = isCreator || isNextSpeaker;
+
   useEffect(() => {
     const fetchCurrentState = async () => {
       try {
@@ -444,18 +448,18 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
               )}
             </div>
 
-            {isCreator || (!isSpectator && userTeam === currentTeamIndex) ? (
+            {canStartGame ? (
               <button
                 onClick={startGame}
                 disabled={loading}
-                className="w-full py-5 bg-red-700 hover:bg-red-600 text-white rounded-2xl font-black text-lg tracking-widest transition-all shadow-[0_20px_50px_-10px_rgba(185,28,28,0.4)]"
+                className="w-full py-5 bg-red-700 hover:bg-red-600 text-white rounded-2xl font-black text-lg tracking-widest transition-all shadow-[0_20px_50px_-10px_rgba(185,28,28,0.4)] disabled:opacity-50"
               >
                 {loading ? "ГЕНЕРУЄМО..." : "ПОЧАТИ ГРУ"}
               </button>
             ) : (
               <div className="text-center p-6 border border-dashed border-zinc-800 rounded-2xl opacity-50">
                 <p className="text-[10px] uppercase font-bold tracking-widest">
-                  Чекаємо на адміна або команду {teams[currentTeamIndex].name}...
+                  Чекаємо, поки {players.find(p => p.team === currentTeamIndex)?.name || "спікер"} почне гру...
                 </p>
               </div>
             )}
@@ -539,13 +543,19 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
                 </div>
               ))}
             </div>
-            {(isCreator || (!isSpectator && userTeam === currentTeamIndex)) && (
+            {canControl ? (
               <button
                 onClick={handleNextTurn}
                 className="w-full py-5 bg-zinc-100 text-black rounded-2xl font-black uppercase tracking-widest transition-all active:scale-95"
               >
                 ПЕРЕДАТИ ХІД
               </button>
+            ) : (
+              <div className="text-center p-4 opacity-50">
+                <p className="text-[10px] uppercase font-bold tracking-widest">
+                  Чекаємо, поки {currentSpeaker} передасть хід...
+                </p>
+              </div>
             )}
           </div>
         )}
