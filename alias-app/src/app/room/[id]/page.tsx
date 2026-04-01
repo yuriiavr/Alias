@@ -37,12 +37,15 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     { name: "Bravo Team", score: 0 },
   ]);
   const [currentTeamIndex, setCurrentTeamIndex] = useState(0);
+  const [speakerIndexPerTeam, setSpeakerIndexPerTeam] = useState<number[]>([0, 0]);
   const [usedWords, setUsedWords] = useState<string[]>([]);
   const [wordsQueue, setWordsQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const canControl = isCreator || userName === currentSpeaker;
-  const isNextSpeaker = players.filter((p) => p.team === currentTeamIndex)[0]?.name === userName;
+  const canControl = userName === currentSpeaker;
+  const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
+  const nextSpeakerIdx = speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
+  const isNextSpeaker = teamPlayers[nextSpeakerIdx]?.name === userName;
   const canStartGame = isCreator || isNextSpeaker;
 
   useEffect(() => {
@@ -57,6 +60,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
           if (data.totalRounds) setTotalRounds(data.totalRounds);
           if (data.currentRound) setCurrentRound(data.currentRound);
           if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
+          if (data.speakerIndexPerTeam) setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
         }
       } catch (e) {
         console.error(e);
@@ -107,6 +111,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         if (data.totalRounds) setTotalRounds(data.totalRounds);
         if (data.difficulty) setDifficulty(data.difficulty);
         if (data.currentTeamIndex !== undefined) setCurrentTeamIndex(data.currentTeamIndex);
+        if (data.speakerIndexPerTeam) setSpeakerIndexPerTeam(data.speakerIndexPerTeam);
       }
       if (data.actionType === "START_GAME") {
         setWordsQueue(data.words);
@@ -203,8 +208,9 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     });
     const { words } = await res.json();
 
-    const teamPlayers = players.filter((p) => p.team === currentTeamIndex);
-    const speaker = teamPlayers[0]?.name || userName;
+    const teamPlayers = players.filter((p) => p.team === currentTeamIndex && !p.isSpectator);
+    const speakerIdx = speakerIndexPerTeam[currentTeamIndex] % (teamPlayers.length || 1);
+    const speaker = teamPlayers[speakerIdx]?.name || userName;
 
     await fetch("/api/game/update", {
       method: "POST",
@@ -257,6 +263,10 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
     let nextTeam = currentTeamIndex === 0 ? 1 : 0;
     let nextRound = currentRound;
 
+    // Rotate speaker for current team
+    const newSpeakerIndex = [...speakerIndexPerTeam];
+    newSpeakerIndex[currentTeamIndex] = speakerIndexPerTeam[currentTeamIndex] + 1;
+
     if (currentTeamIndex === 1) {
       if (currentRound >= totalRounds) {
         setGameState("final");
@@ -272,6 +282,7 @@ export default function GameRoom({ params }: { params: Promise<{ id: string }> }
         actionType: "SYNC_STATE",
         currentTeamIndex: nextTeam,
         currentRound: nextRound,
+        speakerIndexPerTeam: newSpeakerIndex,
       }),
     });
     setGameState("setup");
